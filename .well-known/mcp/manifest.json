@@ -1,0 +1,39 @@
+{
+  "id": "trino-mcp",
+  "name": "Trino Query Engine",
+  "description": "Run SQL across dozens of data sources via Trino",
+  "version": "2025-05-17",
+  "auth": {
+    "type": "none"
+  },
+  "methods": [
+    {
+      "name": "list_catalogs",
+      "description": "Return all available Trino catalogs",
+      "params": { "type": "object", "properties": {}, "additionalProperties": false },
+      "result": { "type": "array", "items": { "type": "string" } }
+    },
+    {
+      "name": "run_query_sync",
+      "description": "Execute a SQL statement and return up to 100 rows",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sql": { "type": "string" },
+          "maxRows": { "type": "integer", "default": 100 }
+        },
+        "required": ["sql"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "columns": { "type": "array", "items": { "type": "string" } },
+          "rows":    { "type": "array", "items": { "type": "array" } }
+        }
+      }
+    }
+  ],
+  "contact": { "email": "ops@example.com" },
+  "logo": "https://trino.io/assets/logo.svg"
+} 
