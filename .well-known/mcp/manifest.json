@@ -4,7 +4,21 @@
   "description": "Run SQL across dozens of data sources via Trino",
   "version": "2025-05-17",
   "auth": {
-    "type": "none"
+    "type": "multiple",
+    "options": [
+      {
+        "type": "none",
+        "description": "No authentication, suitable for development or internal networks"
+      },
+      {
+        "type": "basic",
+        "description": "HTTP Basic Authentication using a username and password"
+      },
+      {
+        "type": "bearer",
+        "description": "JWT bearer token authentication"
+      }
+    ]
   },
   "methods": [
     {

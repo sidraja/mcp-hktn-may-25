@@ -2,14 +2,20 @@ from pathlib import Path
 import os
 import logging
 import json
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ValidationError
 from .rpc import dispatch_rpc
 from . import trino_client
 from .errors import (
     MCPError, ParseError, InvalidRequest, MethodNotFound,
     InvalidParams, InternalError, ErrorCode
+)
+from .auth import (
+    get_current_user, get_current_user_optional, is_auth_enabled,
+    get_auth_mode, create_jwt_token, AUTH_ENABLED, AUTH_MODE,
+    TokenData
 )
 
 # Configure logging
@@ -45,6 +51,15 @@ except Exception as e:
 
 app = FastAPI(title="Trino MCP Gateway")
 
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 MANIFEST_PATH = Path(__file__).parent.parent / ".well-known" / "mcp" / "manifest.json"
 
 
@@ -77,6 +92,61 @@ async def health_check():
     }
 
 
+@app.get("/auth/status")
+async def auth_status(username: str = Depends(get_current_user_optional)):
+    """
+    Get authentication status.
+    
+    Returns the authentication status and the current user if authenticated.
+    """
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "auth_mode": AUTH_MODE,
+        "authenticated": username is not None,
+        "username": username
+    }
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/token")
+async def login_for_token(request: LoginRequest):
+    """
+    Authenticate user and provide JWT token.
+    
+    This endpoint allows users to get a JWT token by providing
+    username/password credentials. The token can then be used
+    for subsequent API calls.
+    """
+    from .auth import authenticate_user
+    
+    if not is_auth_enabled() or get_auth_mode() not in ["bearer", "all"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Token authentication is not enabled"
+        )
+    
+    # Authenticate the user
+    if not authenticate_user(request.username, request.password):
+        raise HTTPException(
+            status_code=401,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    # Create access token
+    token_data = {
+        "sub": request.username,
+        "scopes": []  # Add scopes if needed
+    }
+    access_token = create_jwt_token(token_data)
+    
+    return {"access_token": access_token, "token_type": "bearer"}
+
+
 class RPCEnvelope(BaseModel):
     jsonrpc: str
     id: str | int | None
@@ -85,7 +155,25 @@ class RPCEnvelope(BaseModel):
 
 
 @app.post("/mcp")
-async def mcp_endpoint(req: Request):
+async def mcp_endpoint(req: Request, username: str = Depends(get_current_user_optional)):
+    # Handle authentication
+    if is_auth_enabled() and username is None:
+        return JSONResponse(
+            status_code=401,
+            content={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": ErrorCode.TRINO_AUTH_ERROR,
+                    "message": "Authentication required"
+                },
+                "id": None
+            },
+            headers={"WWW-Authenticate": 'Basic realm="MCP API", Bearer'}
+        )
+    
+    # Set the Trino user based on the authenticated user or default
+    trino_user = username or "anonymous"
+    
     # Parse JSON and handle JSON parsing errors
     try:
         payload = await req.json()
@@ -125,6 +213,9 @@ async def mcp_endpoint(req: Request):
                 "id": env.id
             }
         )
+    
+    # Configure the Trino client with the user from authentication
+    trino_client.get_client().user = trino_user
     
     # Dispatch the method call
     try:

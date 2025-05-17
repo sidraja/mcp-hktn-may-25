@@ -5,6 +5,7 @@ import requests
 import time
 import logging
 import re
+import base64
 from typing import Any, Dict, List, Optional, Tuple, Iterator, Set
 from urllib.parse import urlparse
 from .errors import (
@@ -12,7 +13,8 @@ from .errors import (
     TrinoConnectionError,
     TrinoQueryError,
     TrinoTimeoutError,
-    TrinoResourceError
+    TrinoResourceError,
+    TrinoAuthError
 )
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,8 @@ class TrinoClient:
         user: str = "mcp-client",
         catalog: Optional[str] = None,
         schema: Optional[str] = None,
+        password: Optional[str] = None,
+        jwt_token: Optional[str] = None,
         session_properties: Optional[Dict[str, str]] = None,
         http_headers: Optional[Dict[str, str]] = None,
         http_scheme: str = "http",
@@ -37,6 +41,8 @@ class TrinoClient:
         self.user = user
         self.catalog = catalog
         self.schema = schema
+        self.password = password
+        self.jwt_token = jwt_token
         self.session_properties = session_properties or {}
         self.http_headers = http_headers or {}
         self.http_scheme = http_scheme
@@ -59,6 +65,42 @@ class TrinoClient:
         # Add session properties if provided
         for key, value in self.session_properties.items():
             self.http_headers[f"X-Trino-Session"] = f"{key}={value}"
+        
+        # Add authentication headers if provided
+        self._update_auth_headers()
+
+    def _update_auth_headers(self):
+        """Update authentication headers based on current credentials."""
+        # Basic Auth
+        if self.password:
+            auth_str = f"{self.user}:{self.password}"
+            auth_header = f"Basic {base64.b64encode(auth_str.encode()).decode()}"
+            self.http_headers["Authorization"] = auth_header
+        # JWT Token
+        elif self.jwt_token:
+            self.http_headers["Authorization"] = f"Bearer {self.jwt_token}"
+        # Remove auth header if no credentials
+        elif "Authorization" in self.http_headers:
+            del self.http_headers["Authorization"]
+    
+    def set_credentials(self, user: Optional[str] = None, password: Optional[str] = None, jwt_token: Optional[str] = None):
+        """
+        Set authentication credentials.
+        
+        Args:
+            user: Username for Trino connection
+            password: Password for basic auth
+            jwt_token: JWT token for bearer auth
+        """
+        if user:
+            self.user = user
+            self.http_headers["X-Trino-User"] = user
+        
+        self.password = password
+        self.jwt_token = jwt_token
+        
+        # Update auth headers
+        self._update_auth_headers()
 
     def list_catalogs(self) -> List[str]:
         """Execute SHOW CATALOGS query and return the list of available catalogs."""
@@ -161,6 +203,13 @@ class TrinoClient:
                     verify=self.verify,
                     **kwargs
                 )
+                
+                # Check for auth-related status codes
+                if response.status_code == 401:
+                    raise TrinoAuthError("Authentication failed. Check your credentials.")
+                elif response.status_code == 403:
+                    raise TrinoAuthError("Permission denied. The user does not have sufficient privileges.")
+                
                 response.raise_for_status()
                 return response
             except (requests.RequestException, ConnectionError) as e:
@@ -215,6 +264,8 @@ class TrinoClient:
                     raise handle_trino_error(Exception(f"Insufficient resources: {error_message}"))
                 elif "PERMISSION_DENIED" in error_type:
                     raise handle_trino_error(Exception(f"Permission denied: {error_message}"))
+                elif "ACCESS_DENIED" in error_type:
+                    raise TrinoAuthError(f"Access denied: {error_message}")
                 else:
                     raise handle_trino_error(Exception(f"{error_type} {error_name}: {error_message}"))
             

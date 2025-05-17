@@ -76,23 +76,92 @@ The Trino client can be configured using environment variables:
 | `TRINO_HTTP_SCHEME` | HTTP scheme (http/https) | http |
 | `TRINO_VERIFY_SSL` | Whether to verify SSL certificates | true |
 
-Example:
+## Authentication
+
+The MCP client supports multiple authentication methods:
+
+### Authentication Configuration
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `AUTH_ENABLED` | Enable/disable authentication | false |
+| `AUTH_MODE` | Authentication mode: none, basic, bearer, or all | none |
+| `BASIC_AUTH_USERS` | Comma-separated list of username:password pairs | "" |
+| `JWT_SECRET_KEY` | Secret key for JWT token signing | random |
+| `JWT_ALGORITHM` | Algorithm used for JWT signing | HS256 |
+| `JWT_EXPIRATION_MINUTES` | JWT token expiration in minutes | 60 |
+
+### Enabling Authentication
+
+To enable authentication, set the following environment variables:
 
 ```bash
-export TRINO_HOST=my-trino-server.example.com
-export TRINO_PORT=443
-export TRINO_HTTP_SCHEME=https
-export TRINO_USER=admin
-export TRINO_CATALOG=hive
-export TRINO_SCHEMA=default
-uvicorn app.main:app --reload
+# Enable authentication and set the mode
+export AUTH_ENABLED=true
+export AUTH_MODE=all  # Accepts: none, basic, bearer, or all
+
+# For basic authentication, configure users
+export BASIC_AUTH_USERS="admin:password,user1:pass1,user2:pass2"
+
+# For JWT token authentication
+export JWT_SECRET_KEY="your-secure-secret-key"
+export JWT_EXPIRATION_MINUTES=60
 ```
+
+### Authentication Endpoints
+
+The MCP client provides the following authentication-related endpoints:
+
+- `GET /auth/status` - Check the current authentication status
+- `POST /auth/token` - Obtain a JWT token using username/password credentials
+
+Example of obtaining a JWT token:
+
+```bash
+curl -X POST http://localhost:8000/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "password"}'
+```
+
+Response:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "token_type": "bearer"
+}
+```
+
+### Using Authentication with the API
+
+#### Basic Authentication
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -u "admin:password" \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "list_catalogs", "params": {}}'
+```
+
+#### Bearer Token Authentication
+
+```bash
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -d '{"jsonrpc": "2.0", "id": 1, "method": "list_catalogs", "params": {}}'
+```
+
+### Authentication to Trino
+
+The MCP client will use the authenticated user's identity when connecting to Trino by setting the `X-Trino-User` header. If Trino itself requires authentication, you'll need to configure the appropriate credentials in the Trino server.
 
 ## Available Endpoints
 
 - `GET /.well-known/mcp/manifest.json` - MCP manifest
 - `POST /mcp` - JSON-RPC endpoint for MCP methods
 - `GET /health` - Health check for Trino connectivity
+- `GET /auth/status` - Authentication status
+- `POST /auth/token` - Get JWT token
 
 ## Available Methods
 
@@ -346,6 +415,26 @@ curl -X POST http://localhost:8000/mcp \
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 9, "method": "non_existent_method", "params": {}}'
+
+# Check authentication status
+curl -X GET http://localhost:8000/auth/status
+
+# Get a JWT token
+curl -X POST http://localhost:8000/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "password"}'
+
+# Call endpoint with Basic Auth
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -u "admin:password" \
+  -d '{"jsonrpc": "2.0", "id": 10, "method": "list_catalogs", "params": {}}'
+
+# Call endpoint with Bearer token
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{"jsonrpc": "2.0", "id": 11, "method": "list_catalogs", "params": {}}'
 ```
 
 ## Development
