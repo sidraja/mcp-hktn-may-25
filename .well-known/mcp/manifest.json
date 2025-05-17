@@ -1,0 +1,165 @@
+{
+  "id": "trino-mcp",
+  "name": "Trino Query Engine",
+  "description": "Run SQL across dozens of data sources via Trino",
+  "version": "2025-05-17",
+  "auth": {
+    "type": "multiple",
+    "options": [
+      {
+        "type": "none",
+        "description": "No authentication, suitable for development or internal networks"
+      },
+      {
+        "type": "basic",
+        "description": "HTTP Basic Authentication using a username and password"
+      },
+      {
+        "type": "bearer",
+        "description": "JWT bearer token authentication"
+      }
+    ]
+  },
+  "methods": [
+    {
+      "name": "list_catalogs",
+      "description": "Return all available Trino catalogs",
+      "params": { "type": "object", "properties": {}, "additionalProperties": false },
+      "result": { "type": "array", "items": { "type": "string" } }
+    },
+    {
+      "name": "run_query_sync",
+      "description": "Execute a SQL statement and return up to 100 rows",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sql": { "type": "string" },
+          "maxRows": { "type": "integer", "default": 100 }
+        },
+        "required": ["sql"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "columns": { "type": "array", "items": { "type": "string" } },
+          "rows":    { "type": "array", "items": { "type": "array" } }
+        }
+      }
+    },
+    {
+      "name": "run_query_async",
+      "description": "Execute a SQL statement asynchronously and return a query ID",
+      "params": {
+        "type": "object",
+        "properties": {
+          "sql": { "type": "string" }
+        },
+        "required": ["sql"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "queryId": { "type": "string" }
+        }
+      }
+    },
+    {
+      "name": "get_query_status",
+      "description": "Get the status of an asynchronous query",
+      "params": {
+        "type": "object",
+        "properties": {
+          "queryId": { "type": "string" }
+        },
+        "required": ["queryId"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "queryId": { "type": "string" },
+          "state": { "type": "string", "enum": ["QUEUED", "PLANNING", "RUNNING", "FINISHED", "FAILED", "CANCELED"] },
+          "error": { "type": "object", "nullable": true },
+          "stats": { "type": "object" }
+        }
+      }
+    },
+    {
+      "name": "get_query_results",
+      "description": "Get results from an asynchronous query",
+      "params": {
+        "type": "object",
+        "properties": {
+          "queryId": { "type": "string" },
+          "maxRows": { "type": "integer", "default": 100 }
+        },
+        "required": ["queryId"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "object",
+        "properties": {
+          "columns": { "type": "array", "items": { "type": "string" } },
+          "rows": { "type": "array", "items": { "type": "array" } },
+          "nextToken": { "type": "string", "nullable": true }
+        }
+      }
+    },
+    {
+      "name": "list_schemas",
+      "description": "List all schemas in a catalog",
+      "params": {
+        "type": "object",
+        "properties": {
+          "catalog": { "type": "string" }
+        },
+        "required": ["catalog"],
+        "additionalProperties": false
+      },
+      "result": { "type": "array", "items": { "type": "string" } }
+    },
+    {
+      "name": "list_tables",
+      "description": "List all tables in a schema",
+      "params": {
+        "type": "object",
+        "properties": {
+          "catalog": { "type": "string" },
+          "schema": { "type": "string" }
+        },
+        "required": ["catalog", "schema"],
+        "additionalProperties": false
+      },
+      "result": { "type": "array", "items": { "type": "string" } }
+    },
+    {
+      "name": "get_table_schema",
+      "description": "Get the schema of a table",
+      "params": {
+        "type": "object",
+        "properties": {
+          "catalog": { "type": "string" },
+          "schema": { "type": "string" },
+          "table": { "type": "string" }
+        },
+        "required": ["catalog", "schema", "table"],
+        "additionalProperties": false
+      },
+      "result": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "type": { "type": "string" },
+            "nullable": { "type": "boolean" }
+          }
+        }
+      }
+    }
+  ],
+  "contact": { "email": "ops@example.com" },
+  "logo": "https://trino.io/assets/logo.svg"
+} 

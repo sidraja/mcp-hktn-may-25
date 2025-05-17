@@ -6,3 +6,9 @@ faker==18.13.0
 tqdm==4.66.1
 trino==0.328.0
 gradio==4.8.0
+fastapi==0.111.*
+uvicorn[standard]==0.29.*
+pydantic==2.*
+jsonschema==4.*
+python-json-logger==2.*
+requests==2.* 
