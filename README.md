@@ -96,8 +96,165 @@ uvicorn app.main:app --reload
 
 ## Available Methods
 
+### Basic Operations
+
 - `list_catalogs` - Returns a list of available Trino catalogs
-- `run_query_sync` - Executes a SQL query and returns results (limited to 100 rows by default)
+
+### Query Execution
+
+- `run_query_sync` - Executes a SQL query synchronously and returns results (limited to 100 rows by default)
+- `run_query_async` - Executes a SQL query asynchronously and returns a query ID
+- `get_query_status` - Gets the status of an asynchronous query
+- `get_query_results` - Gets the results of an asynchronous query
+
+### Schema Discovery
+
+- `list_schemas` - Lists all schemas in a catalog
+- `list_tables` - Lists all tables in a schema
+- `get_table_schema` - Gets the schema of a table
+
+## Asynchronous Query Workflow
+
+For large queries or queries that might take a long time to execute, you can use the asynchronous query workflow:
+
+1. Submit a query using `run_query_async` to get a query ID
+2. Poll the query status using `get_query_status` until it reaches the "FINISHED" state
+3. Fetch the results using `get_query_results`
+
+This approach is useful for:
+- Queries that return large result sets
+- Long-running queries
+- Building user interfaces that show query progress
+
+Example:
+
+```json
+// 1. Submit the query
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "run_query_async",
+  "params": {
+    "sql": "SELECT * FROM tpch.sf1.customer"
+  }
+}
+
+// Response:
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "queryId": "20221013_123456_12345_abcde"
+  }
+}
+
+// 2. Check status
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "get_query_status",
+  "params": {
+    "queryId": "20221013_123456_12345_abcde"
+  }
+}
+
+// Response (when running):
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "queryId": "20221013_123456_12345_abcde",
+    "state": "RUNNING",
+    "error": null,
+    "stats": {
+      "elapsedTimeMillis": 1234,
+      "queuedTimeMillis": 100,
+      "cpuTimeMillis": 1000,
+      "processedRows": 1000,
+      "processedBytes": 1024000
+    }
+  }
+}
+
+// 3. Get results (when finished)
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "get_query_results",
+  "params": {
+    "queryId": "20221013_123456_12345_abcde",
+    "maxRows": 10
+  }
+}
+
+// Response:
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "columns": ["c_custkey", "c_name", "c_address"],
+    "rows": [
+      [1, "Customer#000000001", "Address 1"],
+      [2, "Customer#000000002", "Address 2"]
+    ],
+    "nextToken": "https://trino-server/v1/query/20221013_123456_12345_abcde/results?token=abcdef"
+  }
+}
+```
+
+## Schema Discovery Workflow
+
+You can use the schema discovery methods to explore the data available in Trino:
+
+1. First, list available catalogs using `list_catalogs`
+2. For a specific catalog, list schemas using `list_schemas`
+3. For a specific schema, list tables using `list_tables`
+4. For a specific table, get its schema using `get_table_schema`
+
+Example:
+
+```json
+// 1. List catalogs
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "list_catalogs",
+  "params": {}
+}
+
+// 2. List schemas in a catalog
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "list_schemas",
+  "params": {
+    "catalog": "tpch"
+  }
+}
+
+// 3. List tables in a schema
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "list_tables",
+  "params": {
+    "catalog": "tpch",
+    "schema": "sf1"
+  }
+}
+
+// 4. Get table schema
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "get_table_schema",
+  "params": {
+    "catalog": "tpch",
+    "schema": "sf1",
+    "table": "customer"
+  }
+}
+```
 
 ## Error Handling
 
@@ -150,20 +307,45 @@ curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 1, "method": "list_catalogs", "params": {}}'
 
-# Run a query
+# Run a synchronous query
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "run_query_sync", "params": {"sql": "SELECT * FROM system.runtime.nodes", "maxRows": 10}}'
 
+# Run an asynchronous query
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 3, "method": "run_query_async", "params": {"sql": "SELECT * FROM tpch.sf1.customer"}}'
+
+# Get query status
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 4, "method": "get_query_status", "params": {"queryId": "YOUR_QUERY_ID"}}'
+
+# Get query results
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 5, "method": "get_query_results", "params": {"queryId": "YOUR_QUERY_ID", "maxRows": 10}}'
+
+# List schemas
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 6, "method": "list_schemas", "params": {"catalog": "system"}}'
+
+# List tables
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 7, "method": "list_tables", "params": {"catalog": "system", "schema": "runtime"}}'
+
+# Get table schema
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 8, "method": "get_table_schema", "params": {"catalog": "system", "schema": "runtime", "table": "nodes"}}'
+
 # Test error handling (invalid method)
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 3, "method": "non_existent_method", "params": {}}'
-
-# Test error handling (invalid params)
-curl -X POST http://localhost:8000/mcp \
-  -H "Content-Type: application/json" \
-  -d '{"jsonrpc": "2.0", "id": 4, "method": "run_query_sync", "params": {"not_sql": "SELECT 1"}}'
+  -d '{"jsonrpc": "2.0", "id": 9, "method": "non_existent_method", "params": {}}'
 ```
 
 ## Development

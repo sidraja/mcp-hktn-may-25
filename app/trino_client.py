@@ -4,13 +4,15 @@
 import requests
 import time
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Iterator
+import re
+from typing import Any, Dict, List, Optional, Tuple, Iterator, Set
 from urllib.parse import urlparse
 from .errors import (
     handle_trino_error,
     TrinoConnectionError,
     TrinoQueryError,
-    TrinoTimeoutError
+    TrinoTimeoutError,
+    TrinoResourceError
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +67,84 @@ class TrinoClient:
             if not result or "rows" not in result:
                 return []
             return [row[0] for row in result["rows"]]
+        except Exception as e:
+            raise handle_trino_error(e)
+    
+    def list_schemas(self, catalog: str) -> List[str]:
+        """List all schemas in a catalog."""
+        try:
+            # We need to set the catalog in the headers for this query
+            original_catalog = self.http_headers.get("X-Trino-Catalog")
+            
+            # Set the catalog for this request
+            self.http_headers["X-Trino-Catalog"] = catalog
+            
+            try:
+                result = self.execute_query("SHOW SCHEMAS")
+                if not result or "rows" not in result:
+                    return []
+                return [row[0] for row in result["rows"]]
+            finally:
+                # Restore the original catalog
+                if original_catalog:
+                    self.http_headers["X-Trino-Catalog"] = original_catalog
+                else:
+                    self.http_headers.pop("X-Trino-Catalog", None)
+        except Exception as e:
+            raise handle_trino_error(e)
+    
+    def list_tables(self, catalog: str, schema: str) -> List[str]:
+        """List all tables in a schema."""
+        try:
+            # We need to set the catalog and schema in the headers for this query
+            original_catalog = self.http_headers.get("X-Trino-Catalog")
+            original_schema = self.http_headers.get("X-Trino-Schema")
+            
+            # Set the catalog and schema for this request
+            self.http_headers["X-Trino-Catalog"] = catalog
+            self.http_headers["X-Trino-Schema"] = schema
+            
+            try:
+                result = self.execute_query("SHOW TABLES")
+                if not result or "rows" not in result:
+                    return []
+                return [row[0] for row in result["rows"]]
+            finally:
+                # Restore the original catalog and schema
+                if original_catalog:
+                    self.http_headers["X-Trino-Catalog"] = original_catalog
+                else:
+                    self.http_headers.pop("X-Trino-Catalog", None)
+                    
+                if original_schema:
+                    self.http_headers["X-Trino-Schema"] = original_schema
+                else:
+                    self.http_headers.pop("X-Trino-Schema", None)
+        except Exception as e:
+            raise handle_trino_error(e)
+    
+    def get_table_schema(self, catalog: str, schema: str, table: str) -> List[Dict[str, Any]]:
+        """Get the schema of a table."""
+        try:
+            query = f'DESCRIBE "{catalog}"."{schema}"."{table}"'
+            result = self.execute_query(query)
+            
+            if not result or "rows" not in result:
+                return []
+            
+            columns = []
+            for row in result["rows"]:
+                column_name = row[0]
+                column_type = row[1]
+                is_nullable = "not null" not in row[2].lower() if len(row) > 2 else True
+                
+                columns.append({
+                    "name": column_name,
+                    "type": column_type,
+                    "nullable": is_nullable
+                })
+            
+            return columns
         except Exception as e:
             raise handle_trino_error(e)
     
@@ -175,14 +255,171 @@ class TrinoClient:
             logger.error(f"Error executing query: {str(e)}")
             raise handle_trino_error(e)
     
-    def get_query_info(self, query_id: str) -> Dict[str, Any]:
-        """Get information about a specific query."""
+    def submit_query(self, sql: str) -> Dict[str, Any]:
+        """
+        Submit a query asynchronously and return the query ID.
+        
+        Returns:
+            Dict containing the query ID
+        """
+        query_url = f"{self.base_url}/v1/statement"
+        
+        try:
+            response = self._request_with_retry(
+                'post',
+                query_url,
+                data=sql.encode("utf-8")
+            )
+            
+            # Process response to get the query ID
+            query_results = response.json()
+            
+            # Check for error in response
+            if "error" in query_results:
+                error_info = query_results["error"]
+                error_message = error_info.get("message", "Unknown Trino error")
+                error_type = error_info.get("errorType", "")
+                raise handle_trino_error(Exception(f"{error_type}: {error_message}"))
+            
+            # Extract query ID from the response or the nextUri
+            query_id = query_results.get("id")
+            
+            if not query_id and "nextUri" in query_results:
+                # Try to extract query ID from nextUri
+                match = re.search(r'/v1/query/([^/]+)/', query_results["nextUri"])
+                if match:
+                    query_id = match.group(1)
+            
+            if not query_id:
+                raise TrinoQueryError("Failed to extract query ID from response")
+            
+            return {"queryId": query_id}
+            
+        except Exception as e:
+            logger.error(f"Error submitting query: {str(e)}")
+            raise handle_trino_error(e)
+    
+    def get_query_status(self, query_id: str) -> Dict[str, Any]:
+        """
+        Get the status of a query.
+        
+        Args:
+            query_id: The query ID to get status for
+            
+        Returns:
+            Dict containing the query state, ID, and other status information
+        """
         try:
             query_url = f"{self.base_url}/v1/query/{query_id}"
             response = self._request_with_retry('get', query_url)
-            return response.json()
+            query_info = response.json()
+            
+            # Transform to a more standardized format
+            result = {
+                "queryId": query_id,
+                "state": query_info.get("state", "UNKNOWN"),
+                "error": query_info.get("error"),
+                "stats": query_info.get("statistics", {})
+            }
+            
+            return result
         except Exception as e:
-            logger.error(f"Error getting query info: {str(e)}")
+            logger.error(f"Error getting query status: {str(e)}")
+            raise handle_trino_error(e)
+    
+    def get_query_results(self, query_id: str, max_rows: int = 100) -> Dict[str, Any]:
+        """
+        Get the results of a query.
+        
+        Args:
+            query_id: The query ID to get results for
+            max_rows: Maximum number of rows to return
+            
+        Returns:
+            Dict containing columns, rows, and a nextToken if there are more results
+        """
+        try:
+            # First check the query status
+            status = self.get_query_status(query_id)
+            
+            if status["state"] not in ["FINISHED", "RUNNING"]:
+                if status["state"] == "FAILED" and status["error"]:
+                    raise handle_trino_error(Exception(f"Query failed: {status['error'].get('message', 'Unknown error')}"))
+                elif status["state"] == "CANCELED":
+                    raise TrinoQueryError(f"Query was canceled")
+                else:
+                    raise TrinoQueryError(f"Query is not ready yet. Current state: {status['state']}")
+            
+            # Get results URL
+            # First try the info endpoint to get the results URL
+            query_url = f"{self.base_url}/v1/query/{query_id}"
+            response = self._request_with_retry('get', query_url)
+            query_info = response.json()
+            
+            # Figure out where to get results from
+            next_uri = None
+            
+            # If query is still running, we need to get the nextUri
+            if status["state"] == "RUNNING":
+                next_uri = query_info.get("nextUri")
+            else:  # FINISHED state
+                # For finished queries, we might have outputStage with a self link
+                output_stage = query_info.get("outputStage", {})
+                
+                if "self" in output_stage:
+                    # We can get results directly from this URL
+                    next_uri = output_stage["self"] + "/results"
+                elif "nextUri" in query_info:
+                    # Fallback to the nextUri if available
+                    next_uri = query_info["nextUri"]
+            
+            if not next_uri:
+                # If no appropriate URI is found, try constructing a URL for the first page
+                next_uri = f"{self.base_url}/v1/query/{query_id}/results"
+            
+            # Now fetch the results
+            rows = []
+            columns = []
+            next_token = None
+            
+            # Get first page of results
+            response = self._request_with_retry('get', next_uri)
+            results = response.json()
+            
+            if "columns" in results:
+                columns = [col["name"] for col in results["columns"]]
+            
+            if "data" in results:
+                rows.extend(results["data"])
+            
+            # Save nextUri as the next token if available and we need more rows
+            if "nextUri" in results and len(rows) < max_rows:
+                next_token = results["nextUri"]
+                
+                # If we need more rows and have a next token, keep fetching
+                while next_token and len(rows) < max_rows:
+                    response = self._request_with_retry('get', next_token)
+                    results = response.json()
+                    
+                    if "data" in results:
+                        rows.extend(results["data"])
+                        
+                        # Trim to max_rows
+                        if len(rows) > max_rows:
+                            rows = rows[:max_rows]
+                            break
+                    
+                    # Update next token
+                    next_token = results.get("nextUri")
+            
+            return {
+                "columns": columns,
+                "rows": rows,
+                "nextToken": next_token
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting query results: {str(e)}")
             raise handle_trino_error(e)
     
     def check_connection(self) -> bool:
@@ -193,6 +430,24 @@ class TrinoClient:
             return True
         except Exception as e:
             logger.error(f"Connection check failed: {str(e)}")
+            return False
+    
+    def cancel_query(self, query_id: str) -> bool:
+        """
+        Cancel a query.
+        
+        Args:
+            query_id: The query ID to cancel
+            
+        Returns:
+            True if the query was canceled, False otherwise
+        """
+        try:
+            query_url = f"{self.base_url}/v1/query/{query_id}"
+            self._request_with_retry('delete', query_url)
+            return True
+        except Exception as e:
+            logger.error(f"Error canceling query: {str(e)}")
             return False
 
 
