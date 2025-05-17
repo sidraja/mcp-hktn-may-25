@@ -20,7 +20,7 @@ from .auth import (
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed from INFO to DEBUG for more details
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
@@ -156,8 +156,12 @@ class RPCEnvelope(BaseModel):
 
 @app.post("/mcp")
 async def mcp_endpoint(req: Request, username: str = Depends(get_current_user_optional)):
+    # Log headers for debugging
+    logger.debug(f"Received MCP request with headers: {dict(req.headers)}")
+    
     # Handle authentication
     if is_auth_enabled() and username is None:
+        logger.warning("Authentication required but not provided")
         return JSONResponse(
             status_code=401,
             content={
@@ -173,10 +177,16 @@ async def mcp_endpoint(req: Request, username: str = Depends(get_current_user_op
     
     # Set the Trino user based on the authenticated user or default
     trino_user = username or "anonymous"
+    logger.debug(f"Using Trino user: {trino_user}")
+    
+    # Log request body for debugging
+    body = await req.body()
+    logger.debug(f"Received raw request body: {body.decode('utf-8')}")
     
     # Parse JSON and handle JSON parsing errors
     try:
-        payload = await req.json()
+        payload = json.loads(body)
+        logger.debug(f"Parsed JSON payload: {json.dumps(payload, indent=2)}")
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in request: {str(e)}")
         return JSONResponse(
@@ -191,6 +201,7 @@ async def mcp_endpoint(req: Request, username: str = Depends(get_current_user_op
     # Validate against JSON-RPC envelope schema
     try:
         env = RPCEnvelope.model_validate(payload)
+        logger.debug(f"Validated RPC envelope: method={env.method}, id={env.id}")
     except ValidationError as e:
         logger.error(f"Invalid RPC request format: {str(e)}")
         return JSONResponse(
@@ -219,29 +230,39 @@ async def mcp_endpoint(req: Request, username: str = Depends(get_current_user_op
     
     # Dispatch the method call
     try:
+        logger.debug(f"Dispatching method: {env.method} with params: {env.params}")
         result = await dispatch_rpc(env.method, env.params or {})
-        return {"jsonrpc": "2.0", "id": env.id, "result": result}
+        logger.debug(f"Method {env.method} returned result: {result}")
+        response = {"jsonrpc": "2.0", "id": env.id, "result": result}
+        logger.debug(f"Sending response: {json.dumps(response, indent=2)}")
+        return response
     except MCPError as exc:
         # This is already a proper MCPError, use it directly
         logger.error(f"RPC error in method {env.method}: {exc.message}")
-        return {
+        error_response = {
             "jsonrpc": "2.0",
             "id": env.id,
             "error": exc.to_dict(),
         }
+        logger.debug(f"Sending error response: {json.dumps(error_response, indent=2)}")
+        return error_response
     except KeyError as exc:
         # Method not found
         logger.error(f"Method not found: {env.method}")
-        return {
+        error_response = {
             "jsonrpc": "2.0",
             "id": env.id,
             "error": MethodNotFound(f"Method '{env.method}' not found").to_dict(),
         }
+        logger.debug(f"Sending error response: {json.dumps(error_response, indent=2)}")
+        return error_response
     except Exception as exc:
         # Unexpected error
         logger.error(f"Internal error in method {env.method}: {str(exc)}", exc_info=True)
-        return {
+        error_response = {
             "jsonrpc": "2.0",
             "id": env.id,
             "error": InternalError(f"Internal server error: {str(exc)}").to_dict(),
-        } 
+        }
+        logger.debug(f"Sending error response: {json.dumps(error_response, indent=2)}")
+        return error_response 

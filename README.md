@@ -2,7 +2,42 @@
 
 A Model Context Protocol (MCP) client for Trino query engine.
 
-## Setup
+## Running with Docker Compose
+
+The easiest way to run the entire system is using Docker Compose:
+
+```bash
+# Start all services
+docker-compose up -d
+
+# Check the status
+docker-compose ps
+
+# View logs
+docker-compose logs -f
+
+# Stop all services
+docker-compose down
+```
+
+The following services will be started:
+- Trino (port 8080)
+- PostgreSQL (port 5432)
+- ClickHouse (ports 8123, 9000)
+- MCP Server (port 8000)
+- Metabase (port 3000)
+
+## Testing
+
+You can run the test script to verify that everything is working:
+
+```bash
+./test_docker.sh
+```
+
+## Manual Setup
+
+If you prefer to run the components manually:
 
 1. Create and activate a virtual environment:
 
