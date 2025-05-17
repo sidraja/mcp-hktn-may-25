@@ -1,11 +1,16 @@
 from pathlib import Path
 import os
 import logging
+import json
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 from .rpc import dispatch_rpc
 from . import trino_client
+from .errors import (
+    MCPError, ParseError, InvalidRequest, MethodNotFound,
+    InvalidParams, InternalError, ErrorCode
+)
 
 # Configure logging
 logging.basicConfig(
@@ -81,15 +86,71 @@ class RPCEnvelope(BaseModel):
 
 @app.post("/mcp")
 async def mcp_endpoint(req: Request):
-    payload = await req.json()
-    env = RPCEnvelope.model_validate(payload)
+    # Parse JSON and handle JSON parsing errors
+    try:
+        payload = await req.json()
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in request: {str(e)}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "error": ParseError(f"Invalid JSON: {str(e)}").to_dict(),
+                "id": None
+            }
+        )
+    
+    # Validate against JSON-RPC envelope schema
+    try:
+        env = RPCEnvelope.model_validate(payload)
+    except ValidationError as e:
+        logger.error(f"Invalid RPC request format: {str(e)}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "error": InvalidRequest(f"Invalid RPC request format: {str(e)}").to_dict(),
+                "id": payload.get("id")
+            }
+        )
+    
+    # Check JSON-RPC version
+    if env.jsonrpc != "2.0":
+        logger.error(f"Unsupported JSON-RPC version: {env.jsonrpc}")
+        return JSONResponse(
+            status_code=400,
+            content={
+                "jsonrpc": "2.0",
+                "error": InvalidRequest(f"Unsupported JSON-RPC version: {env.jsonrpc}").to_dict(),
+                "id": env.id
+            }
+        )
+    
+    # Dispatch the method call
     try:
         result = await dispatch_rpc(env.method, env.params or {})
         return {"jsonrpc": "2.0", "id": env.id, "result": result}
-    except Exception as exc:
-        logger.error(f"RPC error in method {env.method}: {str(exc)}")
+    except MCPError as exc:
+        # This is already a proper MCPError, use it directly
+        logger.error(f"RPC error in method {env.method}: {exc.message}")
         return {
             "jsonrpc": "2.0",
             "id": env.id,
-            "error": {"code": -32000, "message": str(exc)},
+            "error": exc.to_dict(),
+        }
+    except KeyError as exc:
+        # Method not found
+        logger.error(f"Method not found: {env.method}")
+        return {
+            "jsonrpc": "2.0",
+            "id": env.id,
+            "error": MethodNotFound(f"Method '{env.method}' not found").to_dict(),
+        }
+    except Exception as exc:
+        # Unexpected error
+        logger.error(f"Internal error in method {env.method}: {str(exc)}", exc_info=True)
+        return {
+            "jsonrpc": "2.0",
+            "id": env.id,
+            "error": InternalError(f"Internal server error: {str(exc)}").to_dict(),
         } 

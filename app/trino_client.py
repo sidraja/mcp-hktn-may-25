@@ -6,6 +6,12 @@ import time
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Iterator
 from urllib.parse import urlparse
+from .errors import (
+    handle_trino_error,
+    TrinoConnectionError,
+    TrinoQueryError,
+    TrinoTimeoutError
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,10 +60,13 @@ class TrinoClient:
 
     def list_catalogs(self) -> List[str]:
         """Execute SHOW CATALOGS query and return the list of available catalogs."""
-        result = self.execute_query("SHOW CATALOGS")
-        if not result or "rows" not in result:
-            return []
-        return [row[0] for row in result["rows"]]
+        try:
+            result = self.execute_query("SHOW CATALOGS")
+            if not result or "rows" not in result:
+                return []
+            return [row[0] for row in result["rows"]]
+        except Exception as e:
+            raise handle_trino_error(e)
     
     def _request_with_retry(self, method: str, url: str, **kwargs) -> requests.Response:
         """Perform an HTTP request with retry logic."""
@@ -82,7 +91,8 @@ class TrinoClient:
                     time.sleep(wait_time)
         
         # If we get here, all retries failed
-        raise last_exception or RuntimeError("Request failed after multiple retries")
+        logger.error(f"Request failed after {self.retry_attempts} attempts: {str(last_exception)}")
+        raise handle_trino_error(last_exception or RuntimeError("Request failed after multiple retries"))
     
     def execute_query(self, sql: str, max_rows: int = 100) -> Dict[str, Any]:
         """Execute a SQL query and return results with columns and rows."""
@@ -110,6 +120,24 @@ class TrinoClient:
             if "data" in query_results:
                 rows.extend(query_results["data"])
             
+            # Check for error in response
+            if "error" in query_results:
+                error_info = query_results["error"]
+                error_message = error_info.get("message", "Unknown Trino error")
+                error_type = error_info.get("errorType", "")
+                error_name = error_info.get("errorName", "")
+                
+                if "SYNTAX_ERROR" in error_type:
+                    raise handle_trino_error(Exception(f"Syntax error: {error_message}"))
+                elif "RESOURCE_ERROR" in error_type:
+                    raise handle_trino_error(Exception(f"Resource error: {error_message}"))
+                elif "INSUFFICIENT_RESOURCES" in error_type:
+                    raise handle_trino_error(Exception(f"Insufficient resources: {error_message}"))
+                elif "PERMISSION_DENIED" in error_type:
+                    raise handle_trino_error(Exception(f"Permission denied: {error_message}"))
+                else:
+                    raise handle_trino_error(Exception(f"{error_type} {error_name}: {error_message}"))
+            
             # Follow nextUri if it exists
             while "nextUri" in query_results and len(rows) < max_rows:
                 response = self._request_with_retry('get', query_results["nextUri"])
@@ -123,6 +151,13 @@ class TrinoClient:
                     if len(rows) >= max_rows:
                         rows = rows[:max_rows]
                         break
+                
+                # Check for error in follow-up responses too
+                if "error" in query_results:
+                    error_info = query_results["error"]
+                    error_message = error_info.get("message", "Unknown Trino error")
+                    error_type = error_info.get("errorType", "")
+                    raise handle_trino_error(Exception(f"{error_type}: {error_message}"))
                 
                 # Check if query is finished
                 if "nextUri" not in query_results:
@@ -138,17 +173,17 @@ class TrinoClient:
             
         except Exception as e:
             logger.error(f"Error executing query: {str(e)}")
-            # Provide more context in the error message
-            error_msg = f"Failed to execute query: {str(e)}"
-            if "Connection refused" in str(e):
-                error_msg += ". Check if Trino server is running and accessible."
-            raise RuntimeError(error_msg)
+            raise handle_trino_error(e)
     
     def get_query_info(self, query_id: str) -> Dict[str, Any]:
         """Get information about a specific query."""
-        query_url = f"{self.base_url}/v1/query/{query_id}"
-        response = self._request_with_retry('get', query_url)
-        return response.json()
+        try:
+            query_url = f"{self.base_url}/v1/query/{query_id}"
+            response = self._request_with_retry('get', query_url)
+            return response.json()
+        except Exception as e:
+            logger.error(f"Error getting query info: {str(e)}")
+            raise handle_trino_error(e)
     
     def check_connection(self) -> bool:
         """Check if we can connect to Trino server."""

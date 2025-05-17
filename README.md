@@ -88,25 +88,57 @@ export TRINO_SCHEMA=default
 uvicorn app.main:app --reload
 ```
 
-## Running the Service
-
-Start the FastAPI server with:
-
-```bash
-uvicorn app.main:app --reload
-```
-
-This will start the service on http://127.0.0.1:8000
-
 ## Available Endpoints
 
 - `GET /.well-known/mcp/manifest.json` - MCP manifest
 - `POST /mcp` - JSON-RPC endpoint for MCP methods
+- `GET /health` - Health check for Trino connectivity
 
 ## Available Methods
 
 - `list_catalogs` - Returns a list of available Trino catalogs
 - `run_query_sync` - Executes a SQL query and returns results (limited to 100 rows by default)
+
+## Error Handling
+
+The MCP client implements comprehensive error handling according to the JSON-RPC 2.0 specification. All errors are returned in the standard JSON-RPC error format:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": "request-id",
+  "error": {
+    "code": -32000,
+    "message": "Error message",
+    "data": { "additional": "error details" }
+  }
+}
+```
+
+### Standard JSON-RPC Error Codes
+
+| Code | Message | Meaning |
+|------|---------|---------|
+| -32700 | Parse error | Invalid JSON was received |
+| -32600 | Invalid Request | The JSON sent is not a valid Request object |
+| -32601 | Method not found | The method does not exist / is not available |
+| -32602 | Invalid params | Invalid method parameter(s) |
+| -32603 | Internal error | Internal JSON-RPC error |
+| -32000 to -32099 | Server error | Implementation-defined server errors |
+
+### Trino-Specific Error Codes
+
+The MCP client defines additional error codes for Trino-specific errors:
+
+| Code | Error Type | Description |
+|------|------------|-------------|
+| -33000 | TrinoConnectionError | Unable to connect to Trino server |
+| -33001 | TrinoQueryError | Error executing a query on Trino |
+| -33002 | TrinoAuthError | Authentication error with Trino |
+| -33003 | TrinoResourceError | Resource not available (catalog, schema, table) |
+| -33004 | TrinoTimeoutError | Query execution timeout |
+| -33005 | TrinoSyntaxError | SQL syntax error |
+| -33006 | TrinoStateError | Invalid state for the operation |
 
 ## Testing with curl
 
@@ -122,8 +154,18 @@ curl -X POST http://localhost:8000/mcp \
 curl -X POST http://localhost:8000/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc": "2.0", "id": 2, "method": "run_query_sync", "params": {"sql": "SELECT * FROM system.runtime.nodes", "maxRows": 10}}'
+
+# Test error handling (invalid method)
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 3, "method": "non_existent_method", "params": {}}'
+
+# Test error handling (invalid params)
+curl -X POST http://localhost:8000/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc": "2.0", "id": 4, "method": "run_query_sync", "params": {"not_sql": "SELECT 1"}}'
 ```
 
 ## Development
 
-The current implementation includes stubs for the Trino client. The actual implementation will be added to `app/trino_client.py`.
+The current implementation includes a Trino client that communicates with Trino's REST API. You can extend this implementation by adding more methods or enhancing existing ones in `app/rpc.py`.
