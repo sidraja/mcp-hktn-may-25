@@ -1,97 +1,133 @@
-version: '3.8'
-
+###############################################################################
+# SERVICES
+###############################################################################
 services:
-  # PostgreSQL
+
+  # 1️⃣  PostgreSQL
   postgres:
-    image: postgres:15
-    container_name: mcp-trino-postgres
+    image: postgres:15-alpine
+    container_name: pg-trino
     environment:
-      POSTGRES_USER: trino
+      POSTGRES_USER:     trino
       POSTGRES_PASSWORD: trino
-      POSTGRES_DB: trino
+      POSTGRES_DB:       trino
+      TZ:                UTC
     ports:
       - "5432:5432"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - pg-data:/var/lib/postgresql/data
     networks:
-      - trino-network
+      - trino-net
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "trino"]
+      test: ["CMD-SHELL", "pg_isready -U trino -d trino"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # ClickHouse
+  # 2️⃣  ClickHouse
   clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: mcp-trino-clickhouse
+    image: clickhouse/clickhouse-server:24.4
+    container_name: ch-trino
     ports:
-      - "8123:8123"  # HTTP interface
-      - "9000:9000"  # Native interface
+      - "8123:8123"      # HTTP
+      - "9000:9000"      # Native TCP
     environment:
-      - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=clickhouse
-      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      CLICKHOUSE_USER:     default
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DB:       default
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+      TZ:                  UTC
     volumes:
-      - clickhouse-data:/var/lib/clickhouse
+      - ch-data:/var/lib/clickhouse
     networks:
-      - trino-network
+      - trino-net
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
     healthcheck:
-      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
-      interval: 5s
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
 
-  # Trino Coordinator
-  trino-coordinator:
-    image: trinodb/trino:latest
-    container_name: mcp-trino-coordinator
+  # 3️⃣  Trino coordinator
+  trino:
+    image: trinodb/trino:443
+    container_name: trino-coordinator
     ports:
       - "8080:8080"
     volumes:
-      - ./trino/etc:/etc/trino
+      - ./trino/etc:/etc/trino:ro
     networks:
-      - trino-network
+      - trino-net
     depends_on:
       postgres:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
-    # Simple health check with longer timeout
     healthcheck:
-      test: curl -f http://0.0.0.0:8080/v1/info || exit 1
+      test: ["CMD-SHELL", "curl -fs http://localhost:8080/v1/info | grep version"]
       interval: 15s
       timeout: 10s
       retries: 5
       start_period: 60s
 
-  # Metabase for visualization
+  # 4️⃣  MCP FastAPI server
+  mcp:
+    build:
+      context: .
+    container_name: mcp-server
+    command: [                       # ⬅ run uvicorn directly
+      "uvicorn",
+      "app.main:app",
+      "--host", "0.0.0.0",
+      "--port", "8000",
+      "--log-level", "info"
+    ]
+    working_dir: /code
+    volumes:
+      - .:/code
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: 8080
+      TRINO_USER: mcp-client
+      TRINO_HTTP_SCHEME: http
+      TRINO_VERIFY_SSL: "false"
+      ROW_CAP: 1000
+    ports:
+      - "8000:8000"
+    networks:
+      - trino-net
+    depends_on:
+      trino:
+        condition: service_healthy
+
+  # 5️⃣  Metabase (optional BI)
   metabase:
     image: metabase/metabase:latest
-    container_name: mcp-trino-metabase
+    container_name: metabase
     ports:
       - "3000:3000"
     environment:
-      - MB_DB_TYPE=postgres
-      - MB_DB_DBNAME=trino
-      - MB_DB_PORT=5432
-      - MB_DB_USER=trino
-      - MB_DB_PASS=trino
-      - MB_DB_HOST=mcp-trino-postgres
+      MB_DB_TYPE:   postgres
+      MB_DB_DBNAME: trino
+      MB_DB_PORT:   5432
+      MB_DB_USER:   trino
+      MB_DB_PASS:   trino
+      MB_DB_HOST:   postgres
     networks:
-      - trino-network
+      - trino-net
     depends_on:
       postgres:
         condition: service_healthy
 
+###############################################################################
+# NETWORK & VOLUMES
+###############################################################################
 networks:
-  trino-network:
-    driver: bridge
+  trino-net: {}          # just needs a name; default bridge driver
 
 volumes:
-  postgres-data:
-  clickhouse-data:
+  pg-data:
+  ch-data:
